@@ -1,14 +1,23 @@
+import app.models  # noqa: F401
 from app.core.database import Base
 
 
 def test_models_metadata_registration():
     table_names = set(Base.metadata.tables.keys())
-    expected_tables = {"users", "tournaments", "teams", "team_members", "matches", "messages"}
+    expected_tables = {
+        "users",
+        "tournaments",
+        "teams",
+        "team_members",
+        "matches",
+        "messages",
+        "team_join_requests",
+    }
     assert expected_tables.issubset(table_names)
 
 
 def test_unique_constraints_defined():
-    # Test B-07 constraint on team_members
+    # Test uniqueness constraint on team_members (one team per tournament per player)
     tm_table = Base.metadata.tables["team_members"]
     uq_names = {c.name for c in tm_table.constraints}
     assert "uq_player_per_tournament" in uq_names
