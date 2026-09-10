@@ -5,8 +5,22 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "aiosqlite>=0.22.1",
+    "alembic>=1.19.2",
+    "asyncpg>=0.31.0",
+    "bcrypt>=5.0.0",
+    "cryptography>=50.0.1",
     "fastapi[standard]>=0.141.1",
+    "pwdlib[argon2]>=0.3.1",
+    "pydantic-settings>=2.15.0",
+    "pyjwt>=2.13.0",
     "pylint>=4.0.8",
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "ruff>=0.16.6",
+    "sqlalchemy>=2.0.52",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
