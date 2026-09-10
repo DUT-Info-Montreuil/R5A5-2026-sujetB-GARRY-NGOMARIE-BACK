@@ -8,5 +8,30 @@ dependencies = [
     "fastapi[standard]>=0.141.1",
     "pylint>=4.0.8",
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.0",
     "ruff>=0.16.6",
+    "taskipy>=1.14",
+]
+
+[tool.taskipy.tasks]
+test = "pytest"
+lint = "pylint tests"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra"
+
+[tool.pylint.main]
+py-version = "3.14"
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint."messages control"]
+# Fixtures passed as test-function parameters legitimately shadow the fixture
+# function name; test functions do not each need a docstring.
+disable = [
+    "missing-function-docstring",
+    "redefined-outer-name",
 ]
