@@ -8,7 +8,7 @@ from app.core.config import settings
 from app.core.database import async_session_factory
 from app.core.security import get_password_hash
 from app.models.entities import User
-from app.routers import auth, teams, tournaments
+from app.routers import auth, chat, teams, tournaments
 
 
 @asynccontextmanager
@@ -72,6 +72,7 @@ def create_app() -> FastAPI:
     app.include_router(tournaments.router, prefix="/api/v1")
     app.include_router(teams.tournament_teams_router, prefix="/api/v1")
     app.include_router(teams.teams_router, prefix="/api/v1")
+    app.include_router(chat.router, prefix="/api/v1")
 
     @app.get("/health", tags=["health"])
     async def health_check():

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.entities import Team, TeamJoinRequest, TeamMember, Tournament, User
+from app.realtime.manager import manager, team_room
 from app.schemas.team import (
     JoinRequestResponse,
     TeamAssignRole,
@@ -402,6 +403,10 @@ class TeamService:
             if len(team.members) == 1:
                 await self.db.delete(team)
                 await self.db.commit()
+                # B-17: coupe le socket d'echange du capitaine restant.
+                await manager.revoke(
+                    team_room(team_id), user.id, reason="disbanded"
+                )
                 return {"message": "Équipe dissoute avec succès"}
             # S'il y a d'autres membres, il doit transférer le capitanat d'abord
             raise HTTPException(
@@ -412,6 +417,8 @@ class TeamService:
         await self.db.delete(member)
         await self.db.commit()
         await self.db.refresh(team, ["members"])
+        # B-17: le socket d'echange de l'equipe est coupe immediatement.
+        await manager.revoke(team_room(team_id), user.id, reason="left")
         return {"message": "Vous avez quitté l'équipe avec succès"}
 
     # -------------------------------------------------------------------------
@@ -532,9 +539,14 @@ class TeamService:
                 detail="Le capitaine ne peut pas s'auto-exclure (transférez le capitanat ou quittez l'équipe)",
             )
 
+        excluded_user_id = member.user_id
         await self.db.delete(member)
         await self.db.commit()
         await self.db.refresh(team, ["members"])
+        # B-17: l'exclu perd l'acces a l'espace d'echange immediatement.
+        await manager.revoke(
+            team_room(team_id), excluded_user_id, reason="excluded"
+        )
         return await self.get_team(team.id)
 
     # -------------------------------------------------------------------------
