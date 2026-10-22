@@ -23,5 +23,9 @@ class Settings(BaseSettings):
     # CORS
     allowed_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 
+    # Chat / temps reel
+    chat_message_max_length: int = 2000
+    chat_history_limit: int = 200
+
 
 settings = Settings()
