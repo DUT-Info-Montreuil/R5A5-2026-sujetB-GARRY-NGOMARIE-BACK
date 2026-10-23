@@ -16,23 +16,15 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete
 
-from app.core.security import create_access_token, get_password_hash
 from app.models.entities import Team, TeamMember, User
-
-
-def auth_header(user: User) -> dict[str, str]:
-    token = create_access_token(
-        data={"sub": str(user.id), "username": user.username, "role": user.global_role}
-    )
-    return {"Authorization": f"Bearer {token}"}
+from tests.helpers import session_headers
 
 
 async def _make_user(db, name: str, role: str = "player") -> User:
     user = User(
         id=uuid.uuid4(),
         username=name,
-        email=f"{name}@chat.test",
-        hashed_password=get_password_hash("SecretPass123!"),
+        discord_id=uuid.uuid4().hex,
         global_role=role,
     )
     db.add(user)
@@ -86,6 +78,12 @@ async def chat_env(db_session, open_tournament):
         "member": member,
         "outsider": outsider,
         "admin": admin,
+        "headers": {
+            "captain": await session_headers(db_session, captain.id),
+            "member": await session_headers(db_session, member.id),
+            "outsider": await session_headers(db_session, outsider.id),
+            "admin": await session_headers(db_session, admin.id),
+        },
     }
 
 
@@ -102,16 +100,14 @@ async def test_read_chat_denied_when_unauthenticated(client, chat_env):
 @pytest.mark.asyncio
 async def test_read_chat_denied_when_not_member(client, chat_env):
     resp = await client.get(
-        _messages_url(chat_env["team"].id), headers=auth_header(chat_env["outsider"])
+        _messages_url(chat_env["team"].id), headers=chat_env["headers"]["outsider"]
     )
     assert resp.status_code == 403
 
 
 @pytest.mark.asyncio
 async def test_post_chat_denied_when_unauthenticated(client, chat_env):
-    resp = await client.post(
-        _messages_url(chat_env["team"].id), json={"content": "hi"}
-    )
+    resp = await client.post(_messages_url(chat_env["team"].id), json={"content": "hi"})
     assert resp.status_code == 401
 
 
@@ -119,7 +115,7 @@ async def test_post_chat_denied_when_unauthenticated(client, chat_env):
 async def test_post_chat_denied_when_not_member(client, chat_env):
     resp = await client.post(
         _messages_url(chat_env["team"].id),
-        headers=auth_header(chat_env["outsider"]),
+        headers=chat_env["headers"]["outsider"],
         json={"content": "hi"},
     )
     assert resp.status_code == 403
@@ -139,7 +135,7 @@ async def test_post_chat_denied_when_excluded_member(client, chat_env):
 
     resp = await client.post(
         _messages_url(chat_env["team"].id),
-        headers=auth_header(chat_env["member"]),
+        headers=chat_env["headers"]["member"],
         json={"content": "still here?"},
     )
     assert resp.status_code == 403
@@ -154,7 +150,7 @@ async def test_post_chat_denied_when_team_eliminated(client, chat_env):
 
     resp = await client.post(
         _messages_url(chat_env["team"].id),
-        headers=auth_header(chat_env["member"]),
+        headers=chat_env["headers"]["member"],
         json={"content": "gg"},
     )
     assert resp.status_code == 403
@@ -168,7 +164,7 @@ async def test_read_chat_denied_when_team_eliminated_and_member(client, chat_env
     await db.commit()
 
     resp = await client.get(
-        _messages_url(chat_env["team"].id), headers=auth_header(chat_env["member"])
+        _messages_url(chat_env["team"].id), headers=chat_env["headers"]["member"]
     )
     assert resp.status_code == 403
 
@@ -181,6 +177,6 @@ async def test_read_chat_allowed_when_admin_and_team_eliminated(client, chat_env
     await db.commit()
 
     resp = await client.get(
-        _messages_url(chat_env["team"].id), headers=auth_header(chat_env["admin"])
+        _messages_url(chat_env["team"].id), headers=chat_env["headers"]["admin"]
     )
     assert resp.status_code == 200

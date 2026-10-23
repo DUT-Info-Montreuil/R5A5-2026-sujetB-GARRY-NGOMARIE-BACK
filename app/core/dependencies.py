@@ -1,53 +1,28 @@
-import uuid
 from typing import Annotated
 
-import jwt
-from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi import Cookie, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
-from app.core.security import decode_access_token
 from app.models.entities import User
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token", auto_error=False)
+from app.services.auth_service import user_for_session
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
 async def get_current_user(
-    token: Annotated[str | None, Depends(oauth2_scheme)],
     db: DbSession,
+    session_token: Annotated[
+        str | None, Cookie(alias=settings.session_cookie_name)
+    ] = None,
 ) -> User:
-    if not token:
+    """Resolve the caller from the session cookie, re-read from the DB each time."""
+    user = await user_for_session(db, session_token) if session_token else None
+    if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Non authentifié",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    try:
-        payload = decode_access_token(token)
-        user_id_str = payload.get("sub")
-        if not user_id_str:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Jeton invalide (sub manquant)",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        user_id = uuid.UUID(user_id_str)
-    except (jwt.PyJWTError, ValueError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Impossible de valider les identifiants",
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
-
-    user = await db.get(User, user_id)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Utilisateur non trouvé",
-            headers={"WWW-Authenticate": "Bearer"},
         )
     return user
 

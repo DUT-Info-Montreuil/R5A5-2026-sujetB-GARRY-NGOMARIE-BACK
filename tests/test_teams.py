@@ -5,31 +5,8 @@ import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import create_access_token, get_password_hash
 from app.models.entities import Tournament, User
-
-
-async def create_user(
-    db_session: AsyncSession, username: str, email: str, role: str = "player"
-) -> User:
-    user = User(
-        id=uuid.uuid4(),
-        username=username,
-        email=email,
-        hashed_password=get_password_hash("SecretPass123!"),
-        global_role=role,
-    )
-    db_session.add(user)
-    await db_session.commit()
-    await db_session.refresh(user)
-    return user
-
-
-def auth_header(user: User) -> dict[str, str]:
-    token = create_access_token(
-        data={"sub": str(user.id), "username": user.username, "role": user.global_role}
-    )
-    return {"Authorization": f"Bearer {token}"}
+from tests.helpers import create_user, session_headers
 
 
 @pytest_asyncio.fixture
@@ -119,11 +96,11 @@ async def test_player_cannot_be_in_two_teams_in_same_tournament(
     assert "déjà partie d'une équipe" in resp2.json()["detail"]
 
     # Créer une autre équipe par un autre joueur et tenter de la rejoindre
-    other_user = await create_user(db_session, "other_p", "other@test.fr")
+    other_user = await create_user(db_session, "other_p")
     resp_other = await client.post(
         f"/api/v1/tournaments/{open_tournament.id}/teams",
         json={"name": "Team Three"},
-        headers=auth_header(other_user),
+        headers=(await session_headers(db_session, other_user.id)),
     )
     team3_id = resp_other.json()["id"]
 
@@ -189,8 +166,8 @@ async def test_join_request_flow_and_captain_approval(
     team_id = resp_team.json()["id"]
 
     # 2. Joueur demande à rejoindre
-    candidate = await create_user(db_session, "candidate_1", "cand1@test.fr")
-    candidate_headers = auth_header(candidate)
+    candidate = await create_user(db_session, "candidate_1")
+    candidate_headers = await session_headers(db_session, candidate.id)
 
     req_resp = await client.post(
         f"/api/v1/teams/{team_id}/join",
@@ -245,9 +222,10 @@ async def test_team_max_5_players(
 
     # Ajouter 4 joueurs (total 5) via demandes acceptées par le capitaine
     for i in range(2, 6):
-        u = await create_user(db_session, f"player_{i}", f"player_{i}@test.fr")
+        u = await create_user(db_session, f"player_{i}")
         req_res = await client.post(
-            f"/api/v1/teams/{team_id}/join", headers=auth_header(u)
+            f"/api/v1/teams/{team_id}/join",
+            headers=(await session_headers(db_session, u.id)),
         )
         assert req_res.status_code == 202
         req_id = req_res.json()["id"]
@@ -262,8 +240,11 @@ async def test_team_max_5_players(
     assert team_info.json()["members_count"] == 5
 
     # Le 6ème joueur tente de demander à rejoindre -> Rejeté 400 Bad Request
-    u6 = await create_user(db_session, "player_6", "player_6@test.fr")
-    r6 = await client.post(f"/api/v1/teams/{team_id}/join", headers=auth_header(u6))
+    u6 = await create_user(db_session, "player_6")
+    r6 = await client.post(
+        f"/api/v1/teams/{team_id}/join",
+        headers=(await session_headers(db_session, u6.id)),
+    )
     assert r6.status_code == 400
     assert "complète" in r6.json()["detail"]
 
@@ -284,8 +265,8 @@ async def test_player_can_leave_team_while_open(
     team_id = resp.json()["id"]
 
     # Membre 2 demande et est accepté
-    m2 = await create_user(db_session, "member_2", "m2@test.fr")
-    m2_headers = auth_header(m2)
+    m2 = await create_user(db_session, "member_2")
+    m2_headers = await session_headers(db_session, m2.id)
     req_res = await client.post(f"/api/v1/teams/{team_id}/join", headers=m2_headers)
     assert req_res.status_code == 202
     await client.post(
@@ -321,8 +302,8 @@ async def test_captain_controls_and_non_captain_refused(
     team_id = resp.json()["id"]
 
     # Un joueur tiers non capitaine
-    non_captain = await create_user(db_session, "non_cap", "noncap@test.fr")
-    nc_headers = auth_header(non_captain)
+    non_captain = await create_user(db_session, "non_cap")
+    nc_headers = await session_headers(db_session, non_captain.id)
     nc_req = await client.post(f"/api/v1/teams/{team_id}/join", headers=nc_headers)
     assert nc_req.status_code == 202
     await client.post(

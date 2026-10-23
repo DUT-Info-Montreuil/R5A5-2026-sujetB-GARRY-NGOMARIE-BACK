@@ -35,12 +35,15 @@ Forme d'un message (REST et champ `data` du WebSocket) :
 ### WebSocket
 
 ```
-WS /api/v1/teams/{team_id}/ws?token=<JWT>
+WS /api/v1/teams/{team_id}/ws
 ```
 
-Le jeton est le meme que pour le REST. Il passe en parametre de requete car un
-navigateur ne peut pas poser d'en-tete `Authorization` sur une connexion
-WebSocket.
+L'authentification est le cookie de session `session`, le meme que pour le REST :
+le navigateur l'envoie a l'ouverture de la connexion, sans code cote client. Le
+parametre `?token=` n'existe plus. L'en-tete `Origin` doit figurer dans
+`ALLOWED_ORIGINS`, sinon la poignee de main est refusee (HTTP 403, pas de
+connexion) : cela empeche une page tierce d'ouvrir le socket avec le cookie de
+l'utilisateur.
 
 Le socket est **bidirectionnel** : le client peut envoyer des messages et en
 recevoir. L'ecriture passe par le meme service que le `POST` REST (memes
@@ -48,7 +51,7 @@ gardes, meme ecriture en base, puis diffusion).
 
 #### Cycle de vie
 
-1. Le serveur accepte la connexion puis verifie le jeton et l'appartenance a
+1. Le serveur accepte la connexion puis verifie la session et l'appartenance a
    l'equipe (relue en base).
 2. En cas de refus : une trame `error` est envoyee, puis le socket est ferme
    avec un code applicatif (voir table). Aucune inscription a la salle.
@@ -82,7 +85,7 @@ Toute autre trame recoit une reponse `error` et est ignoree.
 
 | Code | Signification |
 |---|---|
-| `4401` | Jeton absent ou invalide |
+| `4401` | Session absente, invalide ou expiree |
 | `4403` | Authentifie mais pas membre de l'equipe, ou acces retire en cours de session |
 | `4404` | Equipe inconnue |
 

@@ -46,9 +46,7 @@ class ConnectionManager:
             len(self._rooms[room][user_id]),
         )
 
-    def disconnect(
-        self, room: str, user_id: uuid.UUID, websocket: WebSocket
-    ) -> None:
+    def disconnect(self, room: str, user_id: uuid.UUID, websocket: WebSocket) -> None:
         """Retire un socket ferme et nettoie les entrees vides."""
         user_sockets = self._rooms.get(room, {}).get(user_id)
         if not user_sockets:
@@ -87,9 +85,7 @@ class ConnectionManager:
             delivered,
         )
 
-    async def revoke(
-        self, room: str, user_id: uuid.UUID, *, reason: str
-    ) -> None:
+    async def revoke(self, room: str, user_id: uuid.UUID, *, reason: str) -> None:
         """Ferme immediatement tous les sockets d'un utilisateur dans une salle.
 
         Utilise a l'exclusion (B-17) et a l'elimination d'equipe (B-18).
@@ -127,7 +123,7 @@ class ConnectionManager:
         try:
             await websocket.send_json(payload)
             return True
-        except (RuntimeError, WebSocketDisconnect):
+        except RuntimeError, WebSocketDisconnect:
             return False
 
     @staticmethod

@@ -1,155 +1,139 @@
-import uuid
+"""Functional tests of the Discord login flow (Discord itself is stubbed)."""
+
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_password_hash
-from app.models.entities import User
+from app.core.config import settings
+from app.models.entities import User, UserSession
+from app.services import discord_oauth
+from app.services.discord_oauth import DiscordIdentity
+from tests.helpers import TRUSTED_ORIGIN
+
+FLOW = "state-1.verifier-1"
+
+
+@pytest.fixture
+def discord_identity(monkeypatch):
+    """Make Discord 'return' the identity stored in the returned dict."""
+    box = {"identity": DiscordIdentity(id="111", username="alice")}
+
+    async def fake_fetch(code: str, verifier: str) -> DiscordIdentity:
+        assert verifier == "verifier-1"
+        return box["identity"]
+
+    monkeypatch.setattr(discord_oauth, "fetch_identity", fake_fetch)
+    return box
+
+
+async def _callback(client: AsyncClient):
+    return await client.get(
+        "/api/v1/auth/discord/callback",
+        params={"code": "abc", "state": "state-1"},
+        headers={"Cookie": f"oauth_flow={FLOW}"},
+    )
 
 
 @pytest.mark.asyncio
-async def test_auth_register_success_and_conflict(client: AsyncClient):
-    # Register player
-    payload = {
-        "username": "new_player",
-        "email": "new_player@example.com",
-        "password": "Password123!",
-        "global_role": "player",
-    }
-    resp = await client.post("/api/v1/auth/register", json=payload)
-    assert resp.status_code == 201
-    data = resp.json()
-    assert data["username"] == "new_player"
-    assert data["global_role"] == "player"
-
-    # Register admin
-    admin_payload = {
-        "username": "new_admin",
-        "email": "new_admin@example.com",
-        "password": "Password123!",
-        "global_role": "admin",
-    }
-    resp_admin = await client.post("/api/v1/auth/register", json=admin_payload)
-    assert resp_admin.status_code == 201
-    assert resp_admin.json()["global_role"] == "admin"
-
-    # Fallback role when role is unknown
-    other_payload = {
-        "username": "other_user",
-        "email": "other@example.com",
-        "password": "Password123!",
-        "global_role": "unknown_role",
-    }
-    resp_other = await client.post("/api/v1/auth/register", json=other_payload)
-    assert resp_other.status_code == 201
-    assert resp_other.json()["global_role"] == "player"
-
-    # Conflict on username
-    conflict_username = {
-        "username": "new_player",
-        "email": "different_email@example.com",
-        "password": "Password123!",
-    }
-    resp_conflict = await client.post("/api/v1/auth/register", json=conflict_username)
-    assert resp_conflict.status_code == 409
-
-    # Conflict on email
-    conflict_email = {
-        "username": "unique_username",
-        "email": "new_player@example.com",
-        "password": "Password123!",
-    }
-    resp_conflict2 = await client.post("/api/v1/auth/register", json=conflict_email)
-    assert resp_conflict2.status_code == 409
+async def test_discord_login_redirects_with_state_and_pkce(
+    client: AsyncClient, monkeypatch
+):
+    monkeypatch.setattr(settings, "discord_client_id", "client-id")
+    resp = await client.get("/api/v1/auth/discord/login")
+    assert resp.status_code == 302
+    url = urlparse(resp.headers["location"])
+    query = parse_qs(url.query)
+    assert url.netloc == "discord.com"
+    assert query["scope"] == ["identify"]
+    assert query["client_id"] == ["client-id"]
+    assert query["code_challenge_method"] == ["S256"]
+    flow = resp.cookies["oauth_flow"]
+    state, _verifier = flow.split(".")
+    assert query["state"] == [state]
+    assert "httponly" in resp.headers["set-cookie"].lower()
 
 
 @pytest.mark.asyncio
-async def test_auth_token_login_flows(client: AsyncClient, db_session: AsyncSession):
-    # Create test user
-    user = User(
-        id=uuid.uuid4(),
-        username="login_tester",
-        email="tester@tournament.test",
-        hashed_password=get_password_hash("Secret123!"),
-        global_role="player",
-    )
-    db_session.add(user)
-    await db_session.commit()
+async def test_discord_callback_creates_player_and_session(
+    client: AsyncClient, db_session: AsyncSession, discord_identity
+):
+    resp = await _callback(client)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == settings.frontend_url
 
-    # Successful login by username
-    resp = await client.post(
-        "/api/v1/auth/token",
-        data={"username": "login_tester", "password": "Secret123!"},
-    )
-    assert resp.status_code == 200
-    token_data = resp.json()
-    assert "access_token" in token_data
-    assert token_data["token_type"] == "bearer"
+    set_cookies = resp.headers.get_list("set-cookie")
+    session_cookie = next(c for c in set_cookies if c.startswith("session="))
+    assert "httponly" in session_cookie.lower()
+    assert "samesite=lax" in session_cookie.lower()
 
-    # Successful login by email
-    resp_email = await client.post(
-        "/api/v1/auth/token",
-        data={"username": "tester@tournament.test", "password": "Secret123!"},
-    )
-    assert resp_email.status_code == 200
-
-    # Wrong password
-    resp_wrong_pass = await client.post(
-        "/api/v1/auth/token",
-        data={"username": "login_tester", "password": "WrongPassword!"},
-    )
-    assert resp_wrong_pass.status_code == 401
-
-    # Nonexistent user
-    resp_no_user = await client.post(
-        "/api/v1/auth/token",
-        data={"username": "does_not_exist", "password": "Secret123!"},
-    )
-    assert resp_no_user.status_code == 401
+    user = (await db_session.execute(select(User))).scalar_one()
+    assert user.discord_id == "111"
+    assert user.global_role == "player"
+    assert user.username == "alice"
+    sessions = (await db_session.execute(select(UserSession))).scalars().all()
+    assert len(sessions) == 1
+    # only a hash is stored, never the cookie value
+    token = session_cookie.split(";")[0].split("=", 1)[1]
+    assert sessions[0].token_hash != token
 
 
 @pytest.mark.asyncio
-async def test_auth_list_users(client: AsyncClient, db_session: AsyncSession):
-    user1 = User(
-        id=uuid.uuid4(),
-        username="u1",
-        email="u1@test.local",
-        hashed_password=get_password_hash("pass"),
-        global_role="player",
-    )
-    db_session.add(user1)
-    await db_session.commit()
-
-    resp = await client.get("/api/v1/auth/users")
-    assert resp.status_code == 200
-    users = resp.json()
-    assert isinstance(users, list)
-    assert any(u["username"] == "u1" for u in users)
+async def test_me_returns_user_for_valid_session(client: AsyncClient, discord_identity):
+    resp = await _callback(client)
+    token = next(
+        c for c in resp.headers.get_list("set-cookie") if c.startswith("session=")
+    ).split(";")[0]
+    me = await client.get("/api/v1/auth/me", headers={"Cookie": token})
+    assert me.status_code == 200
+    assert me.json()["username"] == "alice"
+    assert me.json()["global_role"] == "player"
 
 
 @pytest.mark.asyncio
-async def test_auth_dev_token(client: AsyncClient, db_session: AsyncSession):
-    user = User(
-        id=uuid.uuid4(),
-        username="dev_user",
-        email="dev@test.local",
-        hashed_password=get_password_hash("pass"),
-        global_role="admin",
+async def test_second_login_reuses_the_same_user(
+    client: AsyncClient, db_session: AsyncSession, discord_identity
+):
+    await _callback(client)
+    await _callback(client)
+    assert len((await db_session.execute(select(User))).scalars().all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_username_collision_gets_a_suffix(
+    client: AsyncClient, db_session: AsyncSession, discord_identity
+):
+    await _callback(client)
+    discord_identity["identity"] = DiscordIdentity(id="222", username="alice")
+    await _callback(client)
+    names = {u.username for u in (await db_session.execute(select(User))).scalars()}
+    assert len(names) == 2
+    assert "alice" in names
+
+
+@pytest.mark.asyncio
+async def test_admin_discord_id_gets_admin_role(
+    client: AsyncClient, db_session: AsyncSession, discord_identity, monkeypatch
+):
+    monkeypatch.setattr(settings, "admin_discord_ids", " 111 , 999")
+    await _callback(client)
+    user = (await db_session.execute(select(User))).scalar_one()
+    assert user.global_role == "admin"
+
+
+@pytest.mark.asyncio
+async def test_logout_deletes_session_and_clears_cookie(
+    client: AsyncClient, db_session: AsyncSession, discord_identity
+):
+    resp = await _callback(client)
+    token = next(
+        c for c in resp.headers.get_list("set-cookie") if c.startswith("session=")
+    ).split(";")[0]
+    out = await client.post(
+        "/api/v1/auth/logout", headers={"Cookie": token, "Origin": TRUSTED_ORIGIN}
     )
-    db_session.add(user)
-    await db_session.commit()
-
-    # Valid user id
-    resp = await client.post(f"/api/v1/auth/dev-token/{user.id}")
-    assert resp.status_code == 200
-    assert "access_token" in resp.json()
-
-    # Invalid UUID
-    resp_bad_uuid = await client.post("/api/v1/auth/dev-token/not-a-uuid")
-    assert resp_bad_uuid.status_code == 400
-
-    # Nonexistent user
-    random_id = uuid.uuid4()
-    resp_not_found = await client.post(f"/api/v1/auth/dev-token/{random_id}")
-    assert resp_not_found.status_code == 404
+    assert out.status_code == 204
+    assert "session=" in out.headers["set-cookie"]
+    assert (await db_session.execute(select(UserSession))).first() is None

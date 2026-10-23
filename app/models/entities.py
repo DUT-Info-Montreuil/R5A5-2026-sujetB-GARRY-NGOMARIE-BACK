@@ -30,10 +30,15 @@ class User(Base):
     username: Mapped[str] = mapped_column(
         String(50), unique=True, nullable=False, index=True
     )
-    email: Mapped[str] = mapped_column(
-        String(255), unique=True, nullable=False, index=True
+    # An account has a Discord identity, a password, or both never mixed in
+    # practice: Discord accounts have no email/password, local ones no discord_id.
+    discord_id: Mapped[str | None] = mapped_column(
+        String(32), unique=True, nullable=True, index=True
     )
-    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[str | None] = mapped_column(
+        String(255), unique=True, nullable=True, index=True
+    )
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     global_role: Mapped[str] = mapped_column(
         String(20), nullable=False, default="player"
     )
@@ -44,6 +49,10 @@ class User(Base):
     __table_args__ = (
         CheckConstraint(
             "global_role IN ('player', 'admin')", name="check_user_global_role"
+        ),
+        CheckConstraint(
+            "discord_id IS NOT NULL OR password_hash IS NOT NULL",
+            name="check_user_has_credential",
         ),
     )
 
@@ -58,6 +67,31 @@ class User(Base):
         "TeamJoinRequest", back_populates="user", cascade="all, delete-orphan"
     )
     messages: Mapped[list[Message]] = relationship("Message", back_populates="author")
+
+
+class UserSession(Base):
+    """Server-side login session; the browser holds only an opaque token."""
+
+    __tablename__ = "user_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    token_hash: Mapped[str] = mapped_column(
+        String(64), unique=True, nullable=False, index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
 
 
 class Tournament(Base):
