@@ -4,13 +4,14 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import create_access_token, get_password_hash
 from app.models.entities import TeamJoinRequest, TeamMember, Tournament, User
+from tests.helpers import create_user, session_headers
 
 
 @pytest.mark.asyncio
 async def test_list_teams_and_search(
     client: AsyncClient,
+    db_session: AsyncSession,
     open_tournament: Tournament,
     player_headers: dict[str, str],
 ):
@@ -23,21 +24,8 @@ async def test_list_teams_and_search(
     assert r1.status_code == 201
 
     # Créer un second joueur pour créer une 2ème équipe
-    # (via register)
-    reg = await client.post(
-        "/api/v1/auth/register",
-        json={
-            "username": "creator_two",
-            "email": "c2@example.com",
-            "password": "Password123!",
-            "global_role": "player",
-        },
-    )
-    user2_id = reg.json()["id"]
-    t2 = create_access_token(
-        {"sub": user2_id, "username": "creator_two", "role": "player"}
-    )
-    h2 = {"Authorization": f"Bearer {t2}"}
+    user2 = await create_user(db_session, "creator_two")
+    h2 = await session_headers(db_session, user2.id)
 
     r2 = await client.post(
         f"/api/v1/tournaments/{open_tournament.id}/teams",
@@ -74,6 +62,7 @@ async def test_list_teams_and_search(
 @pytest.mark.asyncio
 async def test_team_crud_and_name_conflict(
     client: AsyncClient,
+    db_session: AsyncSession,
     open_tournament: Tournament,
     player_headers: dict[str, str],
 ):
@@ -100,19 +89,8 @@ async def test_team_crud_and_name_conflict(
     assert r_bad_team.status_code == 404
 
     # Créer un 2ème joueur avec son équipe
-    reg = await client.post(
-        "/api/v1/auth/register",
-        json={
-            "username": "p_two",
-            "email": "ptwo@example.com",
-            "password": "Password123!",
-            "global_role": "player",
-        },
-    )
-    t2 = create_access_token(
-        {"sub": reg.json()["id"], "username": "p_two", "role": "player"}
-    )
-    h2 = {"Authorization": f"Bearer {t2}"}
+    user2 = await create_user(db_session, "p_two")
+    h2 = await session_headers(db_session, user2.id)
 
     # Tentative de créer une équipe avec un nom déjà existant -> 409
     r_dup = await client.post(
@@ -159,16 +137,12 @@ async def test_join_request_edge_cases(
     candidate = User(
         id=uuid.uuid4(),
         username="candidate_1",
-        email="c1@test.local",
-        hashed_password=get_password_hash("pass"),
+        discord_id=uuid.uuid4().hex,
         global_role="player",
     )
     db_session.add(candidate)
     await db_session.commit()
-    c_token = create_access_token(
-        {"sub": str(candidate.id), "username": "candidate_1", "role": "player"}
-    )
-    c_headers = {"Authorization": f"Bearer {c_token}"}
+    c_headers = await session_headers(db_session, str(candidate.id))
 
     # 404 sur join d'une team inexistante
     r_join_404 = await client.post(
@@ -250,16 +224,12 @@ async def test_join_request_multi_pending_and_already_joined(
     c2 = User(
         id=uuid.uuid4(),
         username="captain_2",
-        email="cap2@test.local",
-        hashed_password=get_password_hash("pass"),
+        discord_id=uuid.uuid4().hex,
         global_role="player",
     )
     db_session.add(c2)
     await db_session.commit()
-    t_c2 = create_access_token(
-        {"sub": str(c2.id), "username": "captain_2", "role": "player"}
-    )
-    h_c2 = {"Authorization": f"Bearer {t_c2}"}
+    h_c2 = await session_headers(db_session, str(c2.id))
 
     r2 = await client.post(
         f"/api/v1/tournaments/{open_tournament.id}/teams",
@@ -272,16 +242,12 @@ async def test_join_request_multi_pending_and_already_joined(
     candidate = User(
         id=uuid.uuid4(),
         username="multi_candidate",
-        email="multi@test.local",
-        hashed_password=get_password_hash("pass"),
+        discord_id=uuid.uuid4().hex,
         global_role="player",
     )
     db_session.add(candidate)
     await db_session.commit()
-    t_cand = create_access_token(
-        {"sub": str(candidate.id), "username": "multi_candidate", "role": "player"}
-    )
-    h_cand = {"Authorization": f"Bearer {t_cand}"}
+    h_cand = await session_headers(db_session, str(candidate.id))
 
     # Demande pour team 1
     req1 = (await client.post(f"/api/v1/teams/{team1_id}/join", headers=h_cand)).json()
@@ -335,16 +301,12 @@ async def test_join_request_when_tournament_closed(
     cand = User(
         id=uuid.uuid4(),
         username="late_cand",
-        email="late@test.local",
-        hashed_password=get_password_hash("pass"),
+        discord_id=uuid.uuid4().hex,
         global_role="player",
     )
     db_session.add(cand)
     await db_session.commit()
-    t_cand = create_access_token(
-        {"sub": str(cand.id), "username": "late_cand", "role": "player"}
-    )
-    h_cand = {"Authorization": f"Bearer {t_cand}"}
+    h_cand = await session_headers(db_session, str(cand.id))
 
     # Créer une demande en attente
     r_join = await client.post(f"/api/v1/teams/{team_id}/join", headers=h_cand)
@@ -385,16 +347,12 @@ async def test_team_leave_and_member_actions_edges(
     other_u = User(
         id=uuid.uuid4(),
         username="non_member",
-        email="nm@test.local",
-        hashed_password=get_password_hash("pass"),
+        discord_id=uuid.uuid4().hex,
         global_role="player",
     )
     db_session.add(other_u)
     await db_session.commit()
-    t_nm = create_access_token(
-        {"sub": str(other_u.id), "username": "non_member", "role": "player"}
-    )
-    h_nm = {"Authorization": f"Bearer {t_nm}"}
+    h_nm = await session_headers(db_session, str(other_u.id))
 
     r_nm_leave = await client.post(f"/api/v1/teams/{team_id}/leave", headers=h_nm)
     assert r_nm_leave.status_code == 404
@@ -459,8 +417,7 @@ async def test_team_captain_cannot_leave_with_members(
     u2 = User(
         id=uuid.uuid4(),
         username="m2",
-        email="m2@test.local",
-        hashed_password=get_password_hash("pass"),
+        discord_id=uuid.uuid4().hex,
         global_role="player",
     )
     db_session.add(u2)
@@ -502,8 +459,7 @@ async def test_accept_join_request_team_full(
         u = User(
             id=uuid.uuid4(),
             username=f"filler_{i}",
-            email=f"filler_{i}@test.local",
-            hashed_password=get_password_hash("pass"),
+            discord_id=uuid.uuid4().hex,
             global_role="player",
         )
         db_session.add(u)
@@ -519,8 +475,7 @@ async def test_accept_join_request_team_full(
     u6 = User(
         id=uuid.uuid4(),
         username="sixth_user",
-        email="sixth@test.local",
-        hashed_password=get_password_hash("pass"),
+        discord_id=uuid.uuid4().hex,
         global_role="player",
     )
     db_session.add(u6)
@@ -561,8 +516,7 @@ async def test_closed_guards_and_non_captain_transfer(
     u2 = User(
         id=uuid.uuid4(),
         username="guard_u2",
-        email="gu2@example.com",
-        hashed_password=get_password_hash("pass"),
+        discord_id=uuid.uuid4().hex,
         global_role="player",
     )
     db_session.add(u2)
@@ -574,10 +528,7 @@ async def test_closed_guards_and_non_captain_transfer(
     )
     db_session.add(m2)
     await db_session.commit()
-    t2 = create_access_token(
-        {"sub": str(u2.id), "username": "guard_u2", "role": "player"}
-    )
-    h2 = {"Authorization": f"Bearer {t2}"}
+    h2 = await session_headers(db_session, str(u2.id))
 
     # Non-capitaine tente de transférer le capitanat -> 403
     r_trans_nc = await client.post(

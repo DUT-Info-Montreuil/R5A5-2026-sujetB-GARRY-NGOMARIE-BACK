@@ -7,9 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 import app.models
 from app.core.database import Base, get_db
-from app.core.security import create_access_token, get_password_hash
+from app.core.rate_limit import login_throttle
 from app.main import app
 from app.models.entities import User
+from tests.helpers import session_headers
 
 # Base SQLite en mémoire pour tests isolés rapides
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
@@ -21,6 +22,14 @@ TestSessionLocal = async_sessionmaker(
     expire_on_commit=False,
     autoflush=False,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_login_throttle():
+    """The throttle is process-global; keep tests independent of each other."""
+    login_throttle.clear()
+    yield
+    login_throttle.clear()
 
 
 @pytest_asyncio.fixture
@@ -52,8 +61,7 @@ async def admin_user(db_session: AsyncSession) -> User:
     admin = User(
         id=uuid.uuid4(),
         username="admin_test",
-        email="admin@tournament.test",
-        hashed_password=get_password_hash("AdminPass123!"),
+        discord_id="111111111111111111",
         global_role="admin",
     )
     db_session.add(admin)
@@ -67,8 +75,7 @@ async def player_user(db_session: AsyncSession) -> User:
     player = User(
         id=uuid.uuid4(),
         username="player_test",
-        email="player@tournament.test",
-        hashed_password=get_password_hash("PlayerPass123!"),
+        discord_id="222222222222222222",
         global_role="player",
     )
     db_session.add(player)
@@ -77,28 +84,14 @@ async def player_user(db_session: AsyncSession) -> User:
     return player
 
 
-@pytest.fixture
-def admin_headers(admin_user: User) -> dict[str, str]:
-    token = create_access_token(
-        data={
-            "sub": str(admin_user.id),
-            "username": admin_user.username,
-            "role": "admin",
-        }
-    )
-    return {"Authorization": f"Bearer {token}"}
+@pytest_asyncio.fixture
+async def admin_headers(db_session: AsyncSession, admin_user: User) -> dict[str, str]:
+    return await session_headers(db_session, admin_user.id)
 
 
-@pytest.fixture
-def player_headers(player_user: User) -> dict[str, str]:
-    token = create_access_token(
-        data={
-            "sub": str(player_user.id),
-            "username": player_user.username,
-            "role": "player",
-        }
-    )
-    return {"Authorization": f"Bearer {token}"}
+@pytest_asyncio.fixture
+async def player_headers(db_session: AsyncSession, player_user: User) -> dict[str, str]:
+    return await session_headers(db_session, player_user.id)
 
 
 @pytest_asyncio.fixture
