@@ -91,10 +91,27 @@ Toute autre trame recoit une reponse `error` et est ignoree.
 
 ## Salle `tournament:<id>` (B-19)
 
-Le gestionnaire de connexions (`app/realtime/manager.py`) gere deja des salles
-`tournament:<id>` pour le suivi public temps reel. Aucun producteur ne diffuse
-encore sur ces salles : le suivi de tournoi sera branche avec la construction du
-bracket et l'entree des resultats (B-12, B-14, B-15, B-19).
+```
+WS /api/v1/tournaments/{tournament_id}/ws
+```
+
+Suivi public, en lecture seule : aucune session requise (un visiteur voit la
+progression, B-02/B-19). L'en-tete `Origin` doit tout de meme figurer dans
+`ALLOWED_ORIGINS`. Le serveur ignore toute trame envoyee par le client. Codes de
+fermeture : `4403` origine refusee, `4404` tournoi inconnu.
+
+A la connexion : `{ "type": "system", "event": "connected", "room": "tournament:<id>" }`.
+Les evenements sont diffuses apres validation en base (la base fait foi ; un
+client qui a rate un evenement relit `GET /api/v1/tournaments/{id}/matches`).
+
+| `type` | `event` | `data` | Emis quand |
+|---|---|---|---|
+| `tournament` | `status_changed` | `{ "tournament_id": "uuid", "status": "registration_closed / running / finished" }` | Cloture des inscriptions (B-03), demarrage (B-04), fin du tableau |
+| `tournament` | `match_updated` | un match (meme forme que `GET .../matches`) | Resultat (B-13), forfait (B-15), forfait automatique (B-04) |
+
+Quand une equipe est eliminee, ses membres connectes a `team:<id>` recoivent
+`system` / `revoked` (`reason: "eliminated"`) puis le socket est ferme (B-18).
+Details des routes : `docs/api-competition.md`.
 
 ## Limite connue
 

@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.csrf import require_trusted_origin
-from app.routers import auth, chat, teams, tournaments
+from app.routers import auth, chat, competition, teams, tournaments
 
 
 def create_app() -> FastAPI:
@@ -26,6 +26,7 @@ def create_app() -> FastAPI:
     app.include_router(tournaments.router, prefix="/api/v1")
     app.include_router(teams.tournament_teams_router, prefix="/api/v1")
     app.include_router(teams.teams_router, prefix="/api/v1")
+    app.include_router(competition.router, prefix="/api/v1")
     app.include_router(chat.router, prefix="/api/v1")
 
     @app.get("/health", tags=["health"])
