@@ -3,8 +3,9 @@
 - `GET  /api/v1/teams/{team_id}/messages` : historique (repli si un client a
   rate des messages temps reel).
 - `POST /api/v1/teams/{team_id}/messages` : publier (aussi diffuse en temps reel).
-- `WS   /api/v1/teams/{team_id}/ws?token=<jwt>` : flux bidirectionnel. Le jeton
-  passe en query car un navigateur ne peut pas poser d'en-tete sur un WebSocket.
+- `WS   /api/v1/teams/{team_id}/ws` : flux bidirectionnel. Authentifie par le
+  cookie de session (le navigateur l'envoie a l'ouverture) ; l'en-tete Origin
+  doit etre autorise, sinon la poignee de main est refusee (CSWSH).
 
 Toutes les regles d'acces sont dans `ChatService` et re-verifiees en base a
 chaque message : aucune autorisation mise en cache (B-17).
@@ -13,19 +14,17 @@ chaque message : aucune autorisation mise en cache (B-17).
 import logging
 import uuid
 
-import jwt
 from fastapi import (
     APIRouter,
     HTTPException,
-    Query,
     WebSocket,
     WebSocketDisconnect,
     status,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.dependencies import CurrentUser, DbSession
-from app.core.security import decode_access_token
 from app.models.entities import User
 from app.realtime.manager import (
     WS_CLOSE_FORBIDDEN,
@@ -35,6 +34,7 @@ from app.realtime.manager import (
     team_room,
 )
 from app.schemas.chat import MessageCreate, MessageResponse
+from app.services.auth_service import user_for_session
 from app.services.chat_service import ChatService
 
 router = APIRouter(prefix="/teams/{team_id}", tags=["chat"])
@@ -69,16 +69,10 @@ async def post_message(
     return await ChatService(db).post_message(team_id, current_user, payload.content)
 
 
-async def _resolve_ws_user(token: str | None, db: AsyncSession) -> User | None:
-    """Meme jeton que le REST ; renvoie None si absent, invalide ou inconnu."""
-    if not token:
-        return None
-    try:
-        payload = decode_access_token(token)
-        user_id = uuid.UUID(payload.get("sub"))
-    except (jwt.PyJWTError, ValueError, TypeError):
-        return None
-    return await db.get(User, user_id)
+async def _resolve_ws_user(websocket: WebSocket, db: AsyncSession) -> User | None:
+    """Meme session que le REST ; None si cookie absent, invalide ou expire."""
+    token = websocket.cookies.get(settings.session_cookie_name)
+    return await user_for_session(db, token) if token else None
 
 
 async def _handle_frame(
@@ -90,9 +84,7 @@ async def _handle_frame(
 ) -> None:
     """Une trame client. Seul `{"type": "message", "content": "..."}` est accepte."""
     if not isinstance(frame, dict) or frame.get("type") != "message":
-        await websocket.send_json(
-            {"type": "error", "detail": "Trame non reconnue"}
-        )
+        await websocket.send_json({"type": "error", "detail": "Trame non reconnue"})
         return
     content = frame.get("content")
     if not isinstance(content, str):
@@ -115,15 +107,20 @@ async def team_chat_ws(
     websocket: WebSocket,
     team_id: uuid.UUID,
     db: DbSession,
-    token: str | None = Query(default=None),
 ) -> None:
+    # Un navigateur ne peut pas forger Origin : refuse avant tout echange.
+    if websocket.headers.get("origin") not in settings.allowed_origins:
+        logger.info("ws auth denied team=%s reason=bad_origin", team_id)
+        await websocket.close(code=WS_CLOSE_FORBIDDEN)
+        return
+
     await websocket.accept()
 
-    user = await _resolve_ws_user(token, db)
+    user = await _resolve_ws_user(websocket, db)
     if user is None:
-        logger.info("ws auth denied team=%s reason=bad_token", team_id)
+        logger.info("ws auth denied team=%s reason=no_session", team_id)
         await websocket.send_json(
-            {"type": "error", "detail": "Jeton manquant ou invalide"}
+            {"type": "error", "detail": "Session manquante ou invalide"}
         )
         await websocket.close(code=WS_CLOSE_UNAUTHENTICATED)
         return
@@ -137,18 +134,14 @@ async def team_chat_ws(
             if exc.status_code == status.HTTP_404_NOT_FOUND
             else WS_CLOSE_FORBIDDEN
         )
-        logger.info(
-            "ws auth denied team=%s user=%s code=%d", team_id, user.id, code
-        )
+        logger.info("ws auth denied team=%s user=%s code=%d", team_id, user.id, code)
         await websocket.send_json({"type": "error", "detail": exc.detail})
         await websocket.close(code=code)
         return
 
     room = team_room(team_id)
     await manager.connect(room, user.id, websocket)
-    await websocket.send_json(
-        {"type": "system", "event": "connected", "room": room}
-    )
+    await websocket.send_json({"type": "system", "event": "connected", "room": room})
     try:
         while True:
             frame = await websocket.receive_json()

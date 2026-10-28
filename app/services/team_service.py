@@ -404,9 +404,7 @@ class TeamService:
                 await self.db.delete(team)
                 await self.db.commit()
                 # B-17: coupe le socket d'echange du capitaine restant.
-                await manager.revoke(
-                    team_room(team_id), user.id, reason="disbanded"
-                )
+                await manager.revoke(team_room(team_id), user.id, reason="disbanded")
                 return {"message": "Équipe dissoute avec succès"}
             # S'il y a d'autres membres, il doit transférer le capitanat d'abord
             raise HTTPException(
@@ -544,9 +542,7 @@ class TeamService:
         await self.db.commit()
         await self.db.refresh(team, ["members"])
         # B-17: l'exclu perd l'acces a l'espace d'echange immediatement.
-        await manager.revoke(
-            team_room(team_id), excluded_user_id, reason="excluded"
-        )
+        await manager.revoke(team_room(team_id), excluded_user_id, reason="excluded")
         return await self.get_team(team.id)
 
     # -------------------------------------------------------------------------

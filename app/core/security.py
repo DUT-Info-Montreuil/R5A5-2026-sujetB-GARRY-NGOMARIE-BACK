@@ -1,35 +1,39 @@
-from datetime import UTC, datetime, timedelta
+import base64
+import hashlib
+import secrets
 
-import jwt
 from pwdlib import PasswordHash
 
-from app.core.config import settings
 
-pwd_context = PasswordHash.recommended()
-
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+def new_session_token() -> str:
+    """Opaque random value sent to the browser; only its hash is stored."""
+    return secrets.token_urlsafe(32)
 
 
-def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+def hash_session_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
-def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.now(UTC) + expires_delta
-    else:
-        expire = datetime.now(UTC) + timedelta(
-            minutes=settings.access_token_expire_minutes
-        )
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(
-        to_encode, settings.secret_key, algorithm=settings.algorithm
+def new_oauth_secret() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def pkce_challenge(verifier: str) -> str:
+    digest = hashlib.sha256(verifier.encode()).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
+
+_hasher = PasswordHash.recommended()
+# Verified against when the account does not exist, so that "unknown user" and
+# "wrong password" cost the same and cannot be told apart by timing.
+_DUMMY_HASH = _hasher.hash("timing-equalizer")
+
+
+def hash_password(password: str) -> str:
+    return _hasher.hash(password)
+
+
+def verify_password(password: str, password_hash: str | None) -> bool:
+    return _hasher.verify(password, password_hash or _DUMMY_HASH) and bool(
+        password_hash
     )
-    return encoded_jwt
-
-
-def decode_access_token(token: str) -> dict:
-    return jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])

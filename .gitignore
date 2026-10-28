@@ -11,3 +11,6 @@ wheels/
 
 # Env file
 .env*
+
+# Local dev database
+*.db
